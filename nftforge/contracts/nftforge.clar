@@ -12,6 +12,9 @@
 (define-constant err-not-authorized (err u106))
 (define-constant err-market-cooldown (err u107))
 (define-constant err-below-floor-price (err u108))
+(define-constant err-invalid-token-id (err u109))
+(define-constant err-invalid-uri (err u110))
+(define-constant err-invalid-parameter (err u111))
 
 ;; Data Variables
 (define-data-var total-supply uint u0)
@@ -26,6 +29,25 @@
 (define-data-var last-mint-block uint u0)
 (define-data-var mint-cooldown uint u100) ;; blocks between mints
 (define-data-var market-multiplier uint u100) ;; base 100 for percentage
+
+;; Input Validation Functions
+(define-private (is-valid-token-id (token-id uint))
+    (and 
+        (<= token-id (var-get total-supply))
+        (is-some (map-get? tokens {token-id: token-id}))
+    )
+)
+
+(define-private (is-valid-uri (uri (string-ascii 256)))
+    (and
+        (not (is-eq uri ""))
+        (<= (len uri) u256)
+    )
+)
+
+(define-private (is-valid-parameter (value uint))
+    (> value u0)
+)
 
 ;; Dynamic Minting Controls
 (define-map holder-activity 
@@ -52,27 +74,18 @@
             (volume-factor (/ (var-get total-volume) (var-get floor-price)))
             (base-multiplier u100)
         )
-        ;; Adjust multiplier based on market factors
-        ;; Higher holder count and volume increase the multiplier
         (+ base-multiplier (+ holder-factor (/ volume-factor u100)))
     )
 )
 
 (define-private (update-market-metrics (price uint))
     (begin
-        ;; Update floor price if necessary
         (if (< price (var-get floor-price))
             (var-set floor-price price)
             true
         )
-        
-        ;; Update total volume
         (var-set total-volume (+ (var-get total-volume) price))
-        
-        ;; Calculate and update market multiplier
         (var-set market-multiplier (calculate-market-multiplier))
-        
-        ;; Record price point
         (map-set price-points
             block-height
             {price: price, volume: (var-get total-volume)})
@@ -104,6 +117,10 @@
             (current-balance (default-to u0 (map-get? token-count tx-sender)))
             (dynamic-mint-limit (/ (* (var-get max-supply) (var-get market-multiplier)) u100))
         )
+        ;; Input validation
+        (asserts! (is-valid-uri metadata-uri) err-invalid-uri)
+        
+        ;; Contract state validation
         (asserts! (not (var-get contract-paused)) err-not-authorized)
         (asserts! (< token-id dynamic-mint-limit) err-mint-limit-reached)
         (asserts! (>= (- block-height (var-get last-mint-block)) (var-get mint-cooldown)) err-market-cooldown)
@@ -114,7 +131,7 @@
         ;; Update market metrics
         (update-market-metrics (var-get mint-price))
         
-        ;; Create token
+        ;; Create token with validated data
         (map-set tokens 
             {token-id: token-id}
             {owner: tx-sender, 
@@ -149,6 +166,10 @@
             (sender-balance (default-to u0 (map-get? token-count tx-sender)))
             (recipient-balance (default-to u0 (map-get? token-count recipient)))
         )
+        ;; Input validation
+        (asserts! (is-valid-token-id token-id) err-invalid-token-id)
+        
+        ;; Contract state validation
         (asserts! (not (var-get contract-paused)) err-not-authorized)
         (asserts! (is-eq (get owner token) tx-sender) err-not-token-owner)
         
@@ -162,7 +183,7 @@
             true
         )
         
-        ;; Update token owner
+        ;; Update token owner with validated token-id
         (map-set tokens
             {token-id: token-id}
             {owner: recipient,
@@ -198,12 +219,11 @@
         (map-get? holder-activity holder)))
 )
 
-;; Existing read-only functions remain the same...
-
 ;; Enhanced Management Functions
 (define-public (set-mint-cooldown (new-cooldown uint))
     (begin
         (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (asserts! (is-valid-parameter new-cooldown) err-invalid-parameter)
         (var-set mint-cooldown new-cooldown)
         (ok true)
     )
@@ -212,6 +232,7 @@
 (define-public (set-floor-price (new-floor-price uint))
     (begin
         (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (asserts! (is-valid-parameter new-floor-price) err-invalid-parameter)
         (var-set floor-price new-floor-price)
         (ok true)
     )
